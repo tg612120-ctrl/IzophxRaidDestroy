@@ -1,36 +1,61 @@
 import os
 import asyncio
+
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.error import RetryAfter, TelegramError
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-async def spam_message(context, chat_id, message_text, end_time):
-    # Ek saath bohot saare concurrent requests bhejne ke liye task list
-    while asyncio.get_event_loop().time() < end_time:
-        tasks = []
-        # Ek batch mein multiple messages ek sath bhejenge
-        for _ in range(10):  # Ek baar mein 10 parallel messages
-            if asyncio.get_event_loop().time() >= end_time:
-                break
-            tasks.append(context.bot.send_message(chat_id=chat_id, text=message_text))
-        
-        if tasks:
-            # Sabhi messages ko ek sath fire karna
-            await asyncio.gather(*tasks, return_exceptions=True)
 
-async def send_custom_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def send_messages(context, chat_id, message_text, end_time):
+    while asyncio.get_running_loop().time() < end_time:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=message_text
+            )
+
+            # Normal pacing — group flood limits ko trigger na karne ke liye
+            await asyncio.sleep(1)
+
+        except RetryAfter as e:
+            # Telegram jitna wait bolta hai, utna hi wait karo
+            await asyncio.sleep(float(e.retry_after) + 0.5)
+
+        except TelegramError as e:
+            print(f"Telegram error: {e}")
+            await asyncio.sleep(2)
+
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            await asyncio.sleep(2)
+
+
+async def send_custom_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     chat_id = update.effective_chat.id
-    
+
     if context.args:
         message_text = " ".join(context.args)
     else:
         message_text = "hello"
-    
-    end_time = asyncio.get_event_loop().time() + 60  # Exact 1 minute
-    
-    # High-speed spam function call karna
-    await spam_message(context, chat_id, message_text, end_time)
+
+    end_time = asyncio.get_running_loop().time() + 60
+
+    await send_messages(
+        context,
+        chat_id,
+        message_text,
+        end_time
+    )
+
 
 def main():
     if not TOKEN:
@@ -38,10 +63,14 @@ def main():
         return
 
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("send", send_custom_message))
-    
-    print("High-Speed Bot start ho raha hai...")
+
+    app.add_handler(
+        CommandHandler("send", send_custom_message)
+    )
+
+    print("Bot started...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
